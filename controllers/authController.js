@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const Wallet = require("../models/Wallet");
+const DepositRequest = require("../models/DepositRequest");
 
 const generateToken = (userId, email) => {
   return jwt.sign({ userId, email }, process.env.JWT_SECRET, {
@@ -331,10 +332,51 @@ const depositByCard = async (req, res) => {
   }
 };
 
+const requestDeposit = async (req, res) => {
+  try {
+    const { amount, transactionId, method = "manual_bank_upi" } = req.body;
+
+    if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid amount",
+      });
+    }
+
+    if (!transactionId || String(transactionId).trim().length < 4) {
+      return res.status(400).json({
+        success: false,
+        error: "Transaction reference is required",
+      });
+    }
+
+    const deposit = await DepositRequest.create({
+      userId: req.user.id,
+      amount,
+      transactionId: String(transactionId).trim(),
+      method,
+      status: "pending",
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Deposit request submitted successfully. Admin review is required.",
+      deposit,
+    });
+  } catch (error) {
+    console.error("Deposit Request Error:", error.message);
+    res.status(500).json({
+      success: false,
+      error: "Error submitting deposit request",
+    });
+  }
+};
+
 module.exports = {
   register,
   login,
   getProfile,
   updateBalance,
   depositByCard,
+  requestDeposit,
 };

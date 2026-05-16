@@ -7,7 +7,9 @@ const {
   getProfile,
   updateBalance,
   depositByCard,
+  requestDeposit,
 } = require("../controllers/authController");
+const { requestWithdraw } = require("../controllers/withdrawController");
 
 const { authMiddleware } = require("../middlewares/auth");
 const {
@@ -15,6 +17,7 @@ const {
   validateLogin,
   validateBalance,
   validateCardDeposit,
+  validateDepositRequest,
 } = require("../middlewares/validation");
 
 // Public Routes
@@ -30,5 +33,7 @@ router.post(
   validateCardDeposit,
   depositByCard,
 );
+router.post("/deposit-request", authMiddleware, validateDepositRequest, requestDeposit);
+router.post("/withdraw", authMiddleware, requestWithdraw);
 
 module.exports = router;

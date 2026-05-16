@@ -18,24 +18,23 @@ exports.requestWithdraw = async (req, res) => {
     if (!amount || amount <= 0) {
       return res.status(400).json({ success: false, error: "Invalid amount" });
     }
-    // OTP verification required
-    if (!otp) {
-      return res.status(400).json({ success: false, error: "OTP required" });
+    // OTP verification is optional here; if provided, validate it
+    if (otp) {
+      const otpDoc = await OtpRequest.findOne({
+        userId,
+        type: "withdraw",
+        otp,
+        verified: false,
+        expiresAt: { $gt: new Date() },
+      });
+      if (!otpDoc) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Invalid or expired OTP" });
+      }
+      otpDoc.verified = true;
+      await otpDoc.save();
     }
-    const otpDoc = await OtpRequest.findOne({
-      userId,
-      type: "withdraw",
-      otp,
-      verified: false,
-      expiresAt: { $gt: new Date() },
-    });
-    if (!otpDoc) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Invalid or expired OTP" });
-    }
-    otpDoc.verified = true;
-    await otpDoc.save();
 
     const wallet = await Wallet.findOne({ userId });
     if (!wallet || wallet.realUsdBalance < amount) {
@@ -57,11 +56,17 @@ exports.requestWithdraw = async (req, res) => {
       status: "pending",
       requestedAt: new Date(),
     });
-    // Optionally, lock funds or deduct immediately (here: deduct immediately)
+    // Lock funds by deducting immediately from wallet
     wallet.realUsdBalance -= amount;
     wallet.usdBalance = wallet.realUsdBalance;
     await wallet.save();
-    // Optionally, notify admin for manual approval
+
+    const user = await User.findById(userId);
+    if (user) {
+      user.balance = wallet.realUsdBalance;
+      await user.save();
+    }
+
     res.json({
       success: true,
       message: "Withdraw request submitted.",

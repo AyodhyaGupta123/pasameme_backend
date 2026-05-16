@@ -129,9 +129,24 @@ const validateCardDeposit = (req, res, next) => {
   next();
 };
 
+const validateDepositRequest = (req, res, next) => {
+  const { amount, transactionId } = req.body;
+
+  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+    return res.status(400).json({ error: "Amount must be greater than 0" });
+  }
+
+  if (!transactionId || String(transactionId).trim().length < 4) {
+    return res.status(400).json({ error: "Valid transaction reference is required" });
+  }
+
+  next();
+};
+
 module.exports = {
   validateRegister,
   validateLogin,
   validateBalance,
   validateCardDeposit,
+  validateDepositRequest,
 };
