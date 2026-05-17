@@ -7,6 +7,8 @@ router.get("/dashboard", adminController.getDashboard);
 router.get("/latest-requests", adminController.getLatestRequests);
 router.get("/deposit-requests", adminController.getDepositRequests);
 router.get("/withdraw-requests", adminController.getWithdrawRequests);
+router.get("/users", adminController.getUsers);
+router.put("/users/:userId/wallet", adminController.updateUserWallet);
 
 router.post("/deposit/approve", adminController.approveDeposit);
 router.post("/deposit/reject", adminController.rejectDeposit);

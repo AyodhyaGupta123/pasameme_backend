@@ -97,6 +97,86 @@ exports.getWithdrawRequests = async (req, res) => {
   }
 };
 
+const ensureUserWallet = async (userId) => {
+  const wallet = await Wallet.findOne({ userId });
+
+  if (wallet) {
+    return wallet;
+  }
+
+  const newWallet = new Wallet({ userId, usdBalance: 0, realUsdBalance: 0, tokenBalance: 0 });
+  await newWallet.save();
+  return newWallet;
+};
+
+exports.getUsers = async (req, res) => {
+  try {
+    const users = await User.find().select("-password").lean();
+    const userIds = users.map((user) => user._id);
+    const wallets = await Wallet.find({ userId: { $in: userIds } }).lean();
+    const walletMap = wallets.reduce((map, wallet) => {
+      map[wallet.userId.toString()] = wallet;
+      return map;
+    }, {});
+
+    const result = users.map((user) => ({
+      ...user,
+      wallet: walletMap[user._id.toString()] || {
+        usdBalance: 0,
+        realUsdBalance: 0,
+        tokenBalance: 0,
+      },
+    }));
+
+    res.json({ success: true, users: result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+exports.updateUserWallet = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { amount } = req.body;
+
+    if (amount === undefined || typeof amount !== "number" || amount < 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Valid amount is required and must be a non-negative number.",
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+
+    const wallet = await ensureUserWallet(user._id);
+    wallet.realUsdBalance = amount;
+    wallet.usdBalance = amount;
+    wallet.lastUpdated = new Date();
+    await wallet.save();
+
+    user.balance = amount;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: "User wallet updated successfully.",
+      user: {
+        ...user.toObject(),
+        wallet: {
+          usdBalance: wallet.usdBalance,
+          realUsdBalance: wallet.realUsdBalance,
+          tokenBalance: wallet.tokenBalance,
+        },
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 exports.approveDeposit = async (req, res) => {
   try {
     const { depositId } = req.body;
