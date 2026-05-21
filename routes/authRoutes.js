@@ -8,10 +8,13 @@ const {
   updateBalance,
   depositByCard,
   requestDeposit,
+  getReferralData,
 } = require("../controllers/authController");
+
 const { requestWithdraw } = require("../controllers/withdrawController");
 
 const { authMiddleware } = require("../middlewares/auth");
+
 const {
   validateRegister,
   validateLogin,
@@ -20,20 +23,43 @@ const {
   validateDepositRequest,
 } = require("../middlewares/validation");
 
-// Public Routes
 router.post("/register", validateRegister, register);
+
 router.post("/login", validateLogin, login);
 
-// Protected Routes
 router.get("/profile", authMiddleware, getProfile);
-router.patch("/balance", authMiddleware, validateBalance, updateBalance);
+
+router.get(
+  "/referral-data",
+  authMiddleware,
+  getReferralData
+);
+
+router.patch(
+  "/balance",
+  authMiddleware,
+  validateBalance,
+  updateBalance
+);
+
 router.post(
   "/deposit-card",
   authMiddleware,
   validateCardDeposit,
-  depositByCard,
+  depositByCard
 );
-router.post("/deposit-request", authMiddleware, validateDepositRequest, requestDeposit);
-router.post("/withdraw", authMiddleware, requestWithdraw);
+
+router.post(
+  "/deposit-request",
+  authMiddleware,
+  validateDepositRequest,
+  requestDeposit
+);
+
+router.post(
+  "/withdraw",
+  authMiddleware,
+  requestWithdraw
+);
 
 module.exports = router;

@@ -2,6 +2,7 @@ const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const Wallet = require("../models/Wallet");
 const DepositRequest = require("../models/DepositRequest");
+const OtpRequest = require("../models/OtpRequest");
 
 const generateToken = (userId, email) => {
   return jwt.sign({ userId, email }, process.env.JWT_SECRET, {
@@ -9,97 +10,125 @@ const generateToken = (userId, email) => {
   });
 };
 
-const isGatewayConfigured = (gateway) => {
-  if (gateway === "stripe") {
-    return Boolean(process.env.STRIPE_SECRET_KEY);
-  }
-  if (gateway === "razorpay") {
-    return Boolean(
-      process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET,
-    );
-  }
-  return true;
-};
-
-const ensureWalletDocument = async (userId, userBalance) => {
-  const safeBalance = Number.isFinite(userBalance) ? userBalance : 0;
+const ensureWalletDocument = async (userId, userBalance = 0) => {
+  const safeBalance = Number.isFinite(Number(userBalance))
+    ? Number(userBalance)
+    : 0;
 
   const wallet = await Wallet.findOneAndUpdate(
     { userId },
     {
       $setOnInsert: {
+        userId,
         usdBalance: safeBalance,
-        realUsdBalance: 0,
+        realUsdBalance: safeBalance,
         tokenBalance: 0,
       },
       $set: {
         lastUpdated: new Date(),
       },
     },
-    { upsert: true, new: true },
+    {
+      upsert: true,
+      new: true,
+      setDefaultsOnInsert: true,
+    }
   );
 
-  let requiresSave = false;
+  let changed = false;
+
   if (wallet.realUsdBalance === undefined || wallet.realUsdBalance === null) {
-    wallet.realUsdBalance = 0;
-    requiresSave = true;
-  }
-  if (wallet.usdBalance === undefined || wallet.usdBalance === null) {
-    wallet.usdBalance = wallet.realUsdBalance;
-    requiresSave = true;
+    wallet.realUsdBalance = safeBalance;
+    changed = true;
   }
 
-  if (requiresSave) {
+  if (wallet.usdBalance === undefined || wallet.usdBalance === null) {
+    wallet.usdBalance = wallet.realUsdBalance;
+    changed = true;
+  }
+
+  if (wallet.tokenBalance === undefined || wallet.tokenBalance === null) {
+    wallet.tokenBalance = 0;
+    changed = true;
+  }
+
+  if (changed) {
+    wallet.lastUpdated = new Date();
     await wallet.save();
   }
 
   return wallet;
 };
 
-// Register Controller
 const register = async (req, res) => {
   try {
-    const { username, email, password } = req.body;
+    const { username, email, password, referralCode } = req.body;
+
+    if (!username || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: "Username, email and password are required",
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const normalizedUsername = username.trim();
 
     const existingUser = await User.findOne({
-      $or: [{ email: email.toLowerCase() }, { username: username }],
+      $or: [{ email: normalizedEmail }, { username: normalizedUsername }],
     });
 
     if (existingUser) {
-      if (existingUser.email === email.toLowerCase()) {
-        return res.status(400).json({
-          success: false,
-          error: "Email already registered",
-        });
-      }
-      if (existingUser.username === username) {
-        return res.status(400).json({
-          success: false,
-          error: "Username already taken",
-        });
-      }
+      return res.status(400).json({
+        success: false,
+        error:
+          existingUser.email === normalizedEmail
+            ? "Email already registered"
+            : "Username already taken",
+      });
+    }
+
+    let referredByUser = null;
+
+    if (referralCode) {
+      referredByUser = await User.findOne({
+        referralCode: referralCode.toUpperCase(),
+      });
     }
 
     const user = new User({
-      username,
-      email: email.toLowerCase(),
+      username: normalizedUsername,
+      email: normalizedEmail,
       password,
       balance: 0,
+      referredBy: referredByUser?._id || null,
     });
 
     await user.save();
-    await ensureWalletDocument(user._id, user.balance);
 
+    if (referredByUser) {
+      referredByUser.totalReferrals = (referredByUser.totalReferrals || 0) + 1;
+      await referredByUser.save();
+    }
+
+    const wallet = await ensureWalletDocument(user._id, user.balance);
     const token = generateToken(user._id, user.email);
+
+    const userData = user.toObject();
+    delete userData.password;
 
     res.status(201).json({
       success: true,
       message: "Registration successful",
       token,
-      user,
+      user: {
+        ...userData,
+        wallet,
+      },
     });
   } catch (error) {
     console.error("Register Error:", error.message);
+
     res.status(500).json({
       success: false,
       error: "Server error during registration",
@@ -107,15 +136,20 @@ const register = async (req, res) => {
   }
 };
 
-// Login Controller
 const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Explicitly select password since it's set to select: false in model
-    const user = await User.findOne({ email: email.toLowerCase() }).select(
-      "+password",
-    );
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: "Email and password are required",
+      });
+    }
+
+    const user = await User.findOne({
+      email: email.toLowerCase().trim(),
+    }).select("+password");
 
     if (!user) {
       return res.status(401).json({
@@ -133,16 +167,24 @@ const login = async (req, res) => {
       });
     }
 
+    const wallet = await ensureWalletDocument(user._id, user.balance);
     const token = generateToken(user._id, user.email);
+
+    const userData = user.toObject();
+    delete userData.password;
 
     res.json({
       success: true,
       message: "Login successful",
       token,
-      user,
+      user: {
+        ...userData,
+        wallet,
+      },
     });
   } catch (error) {
     console.error("Login Error:", error.message);
+
     res.status(500).json({
       success: false,
       error: "Server error during login",
@@ -150,19 +192,29 @@ const login = async (req, res) => {
   }
 };
 
-// Get Profile Controller
 const getProfile = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id); // req.user set by auth middleware
+    const user = await User.findById(req.user.id).select("-password");
+
     if (!user) {
-      return res.status(404).json({ success: false, error: "User not found" });
+      return res.status(404).json({
+        success: false,
+        error: "User not found",
+      });
     }
+
+    const wallet = await ensureWalletDocument(user._id, user.balance);
+
     res.json({
       success: true,
-      user,
+      user: {
+        ...user.toObject(),
+        wallet,
+      },
     });
   } catch (error) {
     console.error("Get Profile Error:", error.message);
+
     res.status(500).json({
       success: false,
       error: "Error fetching profile",
@@ -170,12 +222,11 @@ const getProfile = async (req, res) => {
   }
 };
 
-// Update Balance Controller
 const updateBalance = async (req, res) => {
   try {
-    const { amount } = req.body;
+    const amount = Number(req.body.amount);
 
-    if (typeof amount !== "number") {
+    if (!Number.isFinite(amount)) {
       return res.status(400).json({
         success: false,
         error: "Invalid amount",
@@ -183,14 +234,17 @@ const updateBalance = async (req, res) => {
     }
 
     const user = await User.findById(req.user.id);
+
     if (!user) {
-      return res.status(404).json({ success: false, error: "User not found" });
+      return res.status(404).json({
+        success: false,
+        error: "User not found",
+      });
     }
 
     const wallet = await ensureWalletDocument(user._id, user.balance);
-    const balanceField = "realUsdBalance";
+    const currentBalance = Number(wallet.realUsdBalance || 0);
 
-    const currentBalance = Number(wallet[balanceField] || 0);
     if (currentBalance + amount < 0) {
       return res.status(400).json({
         success: false,
@@ -198,27 +252,28 @@ const updateBalance = async (req, res) => {
       });
     }
 
-    wallet[balanceField] = currentBalance + amount;
+    wallet.realUsdBalance = currentBalance + amount;
     wallet.usdBalance = wallet.realUsdBalance;
     wallet.lastUpdated = new Date();
 
     user.balance = wallet.realUsdBalance;
-    await user.save();
 
     await wallet.save();
+    await user.save();
 
     res.json({
       success: true,
       message: "Balance updated",
       wallet: {
-        usdBalance: Number(wallet.realUsdBalance || 0),
+        usdBalance: Number(wallet.usdBalance || 0),
         realUsdBalance: Number(wallet.realUsdBalance || 0),
         tokenBalance: Number(wallet.tokenBalance || 0),
       },
-      user, // update user in state
+      user,
     });
   } catch (error) {
     console.error("Update Balance Error:", error.message);
+
     res.status(500).json({
       success: false,
       error: "Error updating balance",
@@ -226,19 +281,30 @@ const updateBalance = async (req, res) => {
   }
 };
 
-const OtpRequest = require("../models/OtpRequest");
-
-const crypto = require("crypto");
 const sendOtpToUser = async (user, otp) => {
-  // TODO: Integrate with SMS/email provider
   console.log(`OTP for ${user.email || user.phone}: ${otp}`);
+};
+
+const isGatewayConfigured = (gateway) => {
+  if (gateway === "stripe") {
+    return Boolean(process.env.STRIPE_SECRET_KEY);
+  }
+
+  if (gateway === "razorpay") {
+    return Boolean(
+      process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET
+    );
+  }
+
+  return true;
 };
 
 const depositByCard = async (req, res) => {
   try {
-    const { amount, gateway = "stripe", otp } = req.body;
+    const { gateway = "stripe", otp } = req.body;
+    const amount = Number(req.body.amount);
 
-    if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+    if (!Number.isFinite(amount) || amount <= 0) {
       return res.status(400).json({
         success: false,
         error: "Invalid deposit amount",
@@ -260,23 +326,27 @@ const depositByCard = async (req, res) => {
     }
 
     const user = await User.findById(req.user.id);
+
     if (!user) {
-      return res.status(404).json({ success: false, error: "User not found" });
+      return res.status(404).json({
+        success: false,
+        error: "User not found",
+      });
     }
 
-    // If OTP not provided, generate and send OTP, prompt for OTP input
     if (!otp) {
-      const generatedOtp = Math.floor(
-        100000 + Math.random() * 900000,
-      ).toString();
-      const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 min expiry
+      const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
       await OtpRequest.create({
         userId: req.user.id,
         type: "deposit",
         otp: generatedOtp,
         expiresAt,
       });
+
       await sendOtpToUser(user, generatedOtp);
+
       return res.status(200).json({
         success: false,
         error: "OTP_SENT",
@@ -284,7 +354,6 @@ const depositByCard = async (req, res) => {
       });
     }
 
-    // OTP verification required
     const otpDoc = await OtpRequest.findOne({
       userId: req.user.id,
       type: "deposit",
@@ -292,32 +361,35 @@ const depositByCard = async (req, res) => {
       verified: false,
       expiresAt: { $gt: new Date() },
     });
+
     if (!otpDoc) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Invalid or expired OTP" });
+      return res.status(400).json({
+        success: false,
+        error: "Invalid or expired OTP",
+      });
     }
+
     otpDoc.verified = true;
     await otpDoc.save();
 
     const wallet = await ensureWalletDocument(user._id, user.balance);
+
     wallet.realUsdBalance = Number(wallet.realUsdBalance || 0) + amount;
     wallet.usdBalance = wallet.realUsdBalance;
     wallet.lastUpdated = new Date();
-    await wallet.save();
 
     user.balance = wallet.realUsdBalance;
-    // Add 10% bonus points per deposit
-    const bonus = Math.floor(amount * 0.1);
-    user.bonusPoints = (user.bonusPoints || 0) + bonus;
+    user.bonusPoints = (user.bonusPoints || 0) + Math.floor(amount * 0.1);
+
+    await wallet.save();
     await user.save();
 
     return res.json({
       success: true,
-      message: `$${amount.toFixed(2)} added to real account (+${bonus} bonus points)`,
+      message: `$${amount.toFixed(2)} added to real account`,
       gateway,
       wallet: {
-        usdBalance: Number(wallet.realUsdBalance || 0),
+        usdBalance: Number(wallet.usdBalance || 0),
         realUsdBalance: Number(wallet.realUsdBalance || 0),
         tokenBalance: Number(wallet.tokenBalance || 0),
       },
@@ -325,6 +397,7 @@ const depositByCard = async (req, res) => {
     });
   } catch (error) {
     console.error("Card Deposit Error:", error.message);
+
     res.status(500).json({
       success: false,
       error: "Error processing card deposit",
@@ -334,9 +407,10 @@ const depositByCard = async (req, res) => {
 
 const requestDeposit = async (req, res) => {
   try {
-    const { amount, transactionId, method = "manual_bank_upi" } = req.body;
+    const { transactionId, method = "manual_bank_upi" } = req.body;
+    const amount = Number(req.body.amount);
 
-    if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+    if (!Number.isFinite(amount) || amount <= 0) {
       return res.status(400).json({
         success: false,
         error: "Invalid amount",
@@ -365,9 +439,39 @@ const requestDeposit = async (req, res) => {
     });
   } catch (error) {
     console.error("Deposit Request Error:", error.message);
+
     res.status(500).json({
       success: false,
       error: "Error submitting deposit request",
+    });
+  }
+};
+
+const getReferralData = async (req, res) => {
+  try {
+    const userId = req.user?.id || req.user?._id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized user",
+      });
+    }
+
+    const referralCode = `PASA${String(userId).slice(-6).toUpperCase()}`;
+
+    return res.status(200).json({
+      success: true,
+      referralCode,
+      totalReferrals: 0,
+      referralEarnings: 0,
+    });
+  } catch (error) {
+    console.error("Referral Data Error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch referral data",
     });
   }
 };
@@ -379,4 +483,5 @@ module.exports = {
   updateBalance,
   depositByCard,
   requestDeposit,
+  getReferralData,
 };

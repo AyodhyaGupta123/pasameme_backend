@@ -145,7 +145,167 @@ exports.getWallet = async (req, res) => {
   }
 };
 
-// 3. Mark Single Notification as Read
+// 3. Get Referral Data
+exports.getReferralData = async (req, res) => {
+  try {
+    const userId = getSafeUserId(req);
+
+    if (!userId) {
+      return res
+        .status(401)
+        .json({ success: false, error: "Unauthorized access" });
+    }
+
+    const user = await User.findById(userId).select(
+      "referralCode referrals referralEarnings"
+    );
+
+    if (!user) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+
+    // Generate referral code if it doesn't exist
+    if (!user.referralCode) {
+      user.referralCode = "PASA" + userId.toString().slice(-6).toUpperCase();
+      await user.save();
+    }
+
+    // Count total referrals from the referrals array
+    const totalReferrals = user.referrals ? user.referrals.length : 0;
+    const referralEarnings = user.referralEarnings || 0;
+
+    res.json({
+      success: true,
+      referralCode: user.referralCode,
+      totalReferrals,
+      referralEarnings,
+    });
+  } catch (error) {
+    console.error("Error fetching referral data:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// 4. Apply Referral Code (When new user signs up with referral)
+exports.applyReferralCode = async (req, res) => {
+  try {
+    const { referralCode } = req.body;
+    const userId = getSafeUserId(req);
+
+    if (!userId) {
+      return res
+        .status(401)
+        .json({ success: false, error: "Unauthorized access" });
+    }
+
+    if (!referralCode || referralCode.trim().length === 0) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Referral code is required" });
+    }
+
+    // Find the referrer by their referral code
+    const referrer = await User.findOne({
+      referralCode: referralCode.trim().toUpperCase(),
+    });
+
+    if (!referrer) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Invalid referral code" });
+    }
+
+    if (referrer._id.toString() === userId.toString()) {
+      return res.status(400).json({
+        success: false,
+        error: "You cannot use your own referral code",
+      });
+    }
+
+    // Get the current user to check if they already have a referrer
+    const currentUser = await User.findById(userId);
+    if (currentUser.referredBy) {
+      return res.status(400).json({
+        success: false,
+        error: "You have already used a referral code",
+      });
+    }
+
+    // Add user to referrer's referrals array
+    if (!referrer.referrals) {
+      referrer.referrals = [];
+    }
+    referrer.referrals.push(userId);
+    await referrer.save();
+
+    // Set the referrer for the current user
+    currentUser.referredBy = referrer._id;
+    await currentUser.save();
+
+    // Create notification for referrer
+    await Notification.create({
+      userId: referrer._id,
+      message: `New referral: ${currentUser.name || "User"} joined using your code!`,
+      type: "referral",
+      read: false,
+    });
+
+    res.json({
+      success: true,
+      message: "Referral code applied successfully",
+      referrerName: referrer.name,
+    });
+  } catch (error) {
+    console.error("Error applying referral code:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// 5. Add Referral Earnings (When referral makes first deposit - called from deposit handler)
+exports.addReferralEarnings = async (userId, depositAmount) => {
+  try {
+    const user = await User.findById(userId);
+    if (!user || !user.referredBy) return;
+
+    const referrer = await User.findById(user.referredBy);
+    if (!referrer) return;
+
+    // Calculate 10% commission
+    const commission = (depositAmount * 10) / 100;
+
+    // Update referrer's earnings and wallet
+    referrer.referralEarnings = (referrer.referralEarnings || 0) + commission;
+    await referrer.save();
+
+    // Update referrer's wallet
+    const wallet = await Wallet.findOneAndUpdate(
+      { userId: referrer._id },
+      {
+        $inc: { realUsdBalance: commission },
+        $set: { lastUpdated: new Date() },
+      },
+      { upsert: true, new: true },
+    );
+
+    // Create notification for referrer
+    await Notification.create({
+      userId: referrer._id,
+      message: `Referral bonus: +$${commission.toFixed(2)} (10% from ${user.name || "user"}'s deposit)`,
+      type: "referral_earnings",
+      read: false,
+    });
+
+    console.log(
+      `Referral earnings added: ${commission} to ${referrer.email}`
+    );
+    return commission;
+  } catch (error) {
+    console.error("Error adding referral earnings:", error);
+    return 0;
+  }
+};
+
+// 6. Mark Single Notification as Read
 exports.markRead = async (req, res) => {
   try {
     const { id } = req.params;
@@ -173,7 +333,7 @@ exports.markRead = async (req, res) => {
   }
 };
 
-// 4. Mark All Notifications as Read
+// 7. Mark All Notifications as Read
 exports.markAllAsRead = async (req, res) => {
   try {
     const userId = getSafeUserId(req);
@@ -193,7 +353,7 @@ exports.markAllAsRead = async (req, res) => {
   }
 };
 
-// 5. Delete Single Notification
+// 8. Delete Single Notification
 exports.deleteNotification = async (req, res) => {
   try {
     const { id } = req.params;
@@ -215,7 +375,7 @@ exports.deleteNotification = async (req, res) => {
   }
 };
 
-// 6. Clear All Notifications
+// 9. Clear All Notifications
 exports.clearAllNotifications = async (req, res) => {
   try {
     const userId = getSafeUserId(req);
