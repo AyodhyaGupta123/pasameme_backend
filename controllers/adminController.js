@@ -1,7 +1,9 @@
 const WithdrawRequest = require("../models/WithdrawRequest");
 const DepositRequest = require("../models/DepositRequest");
+const Notification = require("../models/Notification");
 const Wallet = require("../models/Wallet");
 const User = require("../models/User");
+const { authMiddleware } = require("../middlewares/auth");
 
 const { sendStripePayout } = require("../services/stripeService");
 
@@ -10,6 +12,17 @@ const safeSendStripePayout = async (params) => {
     return { success: false, message: "Stripe not configured. Skipping actual payout." };
   }
   return await sendStripePayout(params);
+};
+
+const admin = (req, res, next) => {
+  if (req.user && req.user.role === "admin") {
+    return next();
+  }
+
+  return res.status(403).json({
+    success: false,
+    message: "Admin access only",
+  });
 };
 
 const buildDashboardStats = async () => {
@@ -291,6 +304,68 @@ exports.approveWithdraw = async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+exports.createNotification = async (req, res) => {
+  try {
+    const {
+      title,
+      message,
+      type = "system",
+      priority = "medium",
+       expiresAt,
+    } = req.body;
+
+    if (!title || !message) {
+      return res.status(400).json({
+        success: false,
+        message: "Title and message are required",
+      });
+    }
+
+    const users = await User.find().select("_id");
+
+    const notifications = users.map((user) => ({
+      userId: user._id,
+      message: `${title} - ${message}`,
+      type,
+      priority,
+      expiresAt,
+    }));
+
+    await Notification.insertMany(notifications);
+
+    res.status(201).json({
+      success: true,
+      message: "Notification sent to all users",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to create notification",
+      error: error.message,
+    });
+  }
+};
+
+exports.getNotifications = async (req, res) => {
+  try {
+    const notifications = await Notification.find()
+      .populate("userId", "username email")
+      .sort({ createdAt: -1 })
+      .limit(50);
+
+    res.json({
+      success: true,
+      notifications,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch notifications",
+      error: error.message,
+    });
   }
 };
 

@@ -15,6 +15,7 @@ router.get('/info', authMiddleware, getHeaderData);
 
 router.get('/wallet', authMiddleware, getWallet);
 
+
 router.put('/notification/:id', markRead);
 
 router.put('/notifications/read-all', markAllAsRead);

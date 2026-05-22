@@ -82,6 +82,8 @@ const withdrawRoutes = require("./routes/withdrawRoutes");
 const otpRoutes = require("./routes/otpRoutes");
 const adminRoutes = require("./routes/adminRoutes");
 const priceWS = require("./websocket/priceWebSocket");
+const upiRoutes = require("./routes/upiRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
 
 // Health check
 app.get("/", (req, res) => {
@@ -100,6 +102,8 @@ app.use("/api/orders", orderRoutes);
 app.use("/api/withdraw", withdrawRoutes);
 app.use("/api/otp", otpRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/upi", upiRoutes);
 
 // ================= SERVER =================
 const server = http.createServer(app);
