@@ -10,7 +10,6 @@ dotenv.config();
 const app = express();
 app.set("trust proxy", 1);
 
-// ================= RATE LIMIT =================
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 300,
@@ -22,54 +21,47 @@ const apiLimiter = rateLimit({
   },
 });
 
-// ================= SECURITY =================
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
-  }),
+  })
 );
 
 app.use("/api", apiLimiter);
 
-// ================= CORS (FIXED) =================
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Allow Postman, mobile apps, SSR
-      if (!origin) return callback(null, true);
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
 
-      const allowed =
-        origin.includes("localhost") ||
-        origin.includes("onrender.com") ||
-        origin.includes("pasameme.in");
+    const allowed =
+      origin.includes("localhost") ||
+      origin.includes("onrender.com") ||
+      origin.includes("pasameme.in");
 
-      if (allowed) return callback(null, true);
+    if (allowed) return callback(null, true);
 
-      console.log("❌ Blocked by CORS:", origin);
-      return callback(new Error("Not allowed by CORS"));
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  }),
-);
+    console.log("❌ Blocked by CORS:", origin);
+    return callback(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
 
-// Preflight fix
-app.options("*", cors());
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 
-// ================= BODY PARSER =================
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ================= DEBUG (remove later) =================
 app.use((req, res, next) => {
   console.log("🌍 Origin:", req.headers.origin);
   console.log("🔐 Auth Header:", req.headers.authorization);
   next();
 });
 
-// ================= DB & ROUTES =================
 const connectDB = require("./config/db");
+
 const authRoutes = require("./routes/authRoutes");
 const headerRoutes = require("./routes/headerRoutes");
 const tradeRoutes = require("./routes/tradeRoutes");
@@ -81,16 +73,16 @@ const orderRoutes = require("./routes/orderRoutes");
 const withdrawRoutes = require("./routes/withdrawRoutes");
 const otpRoutes = require("./routes/otpRoutes");
 const adminRoutes = require("./routes/adminRoutes");
-const priceWS = require("./websocket/priceWebSocket");
 const upiRoutes = require("./routes/upiRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 
-// Health check
+const priceWS = require("./websocket/priceWebSocket");
+const { startScheduler } = require("./services/orderScheduler");
+
 app.get("/", (req, res) => {
   res.status(200).send("🚀 PasaMeme API Live");
 });
 
-// Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/header", headerRoutes);
 app.use("/api/trade", tradeRoutes);
@@ -105,29 +97,27 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/upi", upiRoutes);
 
-// ================= SERVER =================
 const server = http.createServer(app);
 
-// WebSocket init
 if (priceWS?.init) {
   priceWS.init(server);
 }
-
-// Start order scheduler
-const { startScheduler } = require("./services/orderScheduler");
-startScheduler();
-
-// Start daily notification scheduler
-require("./services/dailyNotificationScheduler");
 
 const PORT = process.env.PORT || 5001;
 
 const startServer = async () => {
   try {
     await connectDB();
-    server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+    startScheduler();
+    require("./services/dailyNotificationScheduler");
+
+    server.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+    });
   } catch (err) {
-    console.error("❌ Server start failed:", err);
+    console.error("❌ Server start failed:", err.message);
+    process.exit(1);
   }
 };
 
