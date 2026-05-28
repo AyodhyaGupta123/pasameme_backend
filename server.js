@@ -78,6 +78,7 @@ const notificationRoutes = require("./routes/notificationRoutes");
 
 const priceWS = require("./websocket/priceWebSocket");
 const { startScheduler } = require("./services/orderScheduler");
+const supportRoutes = require("./routes/supportRoutes");
 
 app.get("/", (req, res) => {
   res.status(200).send("🚀 PasaMeme API Live");
@@ -96,6 +97,7 @@ app.use("/api/otp", otpRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/upi", upiRoutes);
+app.use("/api/support", supportRoutes);
 
 const server = http.createServer(app);
 
